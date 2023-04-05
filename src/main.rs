@@ -43,10 +43,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
     });
 
+    let mut aspect = size.width as f32 / size.height as f32;
+
     let aspect_buffer = device.create_buffer_init(
         &wgpu::util::BufferInitDescriptor {
             label: Some("Aspect ratio buffer"),
-            contents: bytemuck::cast_slice(&[size.width / size.height]),
+            contents: bytemuck::cast_slice(&[aspect]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -77,22 +79,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         label: Some("aspect_bind_group"),
     });
 
-    let render_pipeline_layout = device.create_pipeline_layout(
-        &wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[
-                &aspect_bind_group_layout,
-            ],
-            push_constant_ranges: &[],
-        }
-    );
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[
+            &aspect_bind_group_layout
+        ],
+        push_constant_ranges: &[],
+    });
 
     let swapchain_capabilities = surface.get_capabilities(&adapter);
     let swapchain_format = swapchain_capabilities.formats[0];
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
-        layout: Some(&render_pipeline_layout),
+        layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: "vs_main",
@@ -125,7 +125,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         // Have the closure take ownership of the resources.
         // `event_loop.run` never returns, therefore we must do this to ensure
         // the resources are properly cleaned up.
-        let _ = (&instance, &adapter, &shader, &render_pipeline_layout);
+        let _ = (&instance, &adapter, &shader, &pipeline_layout);
 
         *control_flow = ControlFlow::Wait;
         match event {
@@ -136,6 +136,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Reconfigure the surface with the new size
                 config.width = size.width;
                 config.height = size.height;
+                aspect = size.width as f32 / size.height as f32;
+                queue.write_buffer(&aspect_buffer, 0, bytemuck::cast_slice(&[aspect]));
                 surface.configure(&device, &config);
                 // On macos the window needs to be redrawn manually after resizing
                 window.request_redraw();
@@ -163,6 +165,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         depth_stencil_attachment: None,
                     });
                     rpass.set_pipeline(&render_pipeline);
+                    rpass.set_bind_group(0, &aspect_bind_group, &[]);
                     rpass.draw(0..6, 0..1);
                 }
 
