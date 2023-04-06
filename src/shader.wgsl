@@ -73,34 +73,56 @@ fn square(a: Complex) -> Complex {
     );
 }
 
+fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    let clamped = p - K.xxx;
+    return c.z * mix(K.xxx, clamped, c.y);
+}
+
 const lim = 256u;
 
-fn colour(c: Complex) -> vec3<f32> {
-    var z = Complex(0.0, 0.0);
-    var n = 0u;
-    var abs = length(z);
+fn colour1(abs: f32, iter: u32) -> vec3<f32> {
+    let iter = f32(iter) / f32(lim);
+    let r = abs / 13.12 + iter;
+    let g = iter - sin(abs / 1.7) / 24.3;
+    let b = hsv2rgb(vec3<f32>(0.0, 1.0, iter)).r;
+    return vec3<f32>(r, g, b);
+}
 
-    while (abs < 2.0 && n < lim) {
+fn colour2(abs: f32, iter: u32) -> vec3<f32> {
+    let iter = f32(iter) / f32(lim);
+    return hsv2rgb(vec3<f32>(0.0, 1.0, iter));
+}
+
+fn julia(c: Complex, z: Complex) -> vec3<f32> {
+    var z = z;
+    var n = 0u;
+    var abs = 0.0;
+
+    while (abs < 4.0 && n < lim) {
         z = square(z) + c;
-        abs = length(z);
+        abs = z.x * z.x + z.y * z.y;
         n++;
     }
+
+    abs = sqrt(abs);
 
     if (n == lim) {
         return vec3<f32>(0.0);
     }
     else {
-        let n = f32(n) / f32(lim);
-        let r = abs % 13.1999 / 13.12 + n;
-        let g = n - sin(abs / 1.7) / 21.3 + z.y / 66.7;
-        let b = n - abs % 0.123 + (sin(n * 12.3) + 1.0) / 1999.1213;
-        return vec3<f32>(r, g, b);
+        return colour1(abs, n);
     }
+}
 
+fn mandelbrot(c: Complex) -> vec3<f32> {
+    return julia(c, Complex(0.0, 0.0));
 }
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     let c = ((vertex.tex_coords.xy - vec2<f32>(0.5, 0.5)) * properties.zoom + properties.center);
-    return vec4<f32>(colour(c), 1.0);
+    return vec4<f32>(mandelbrot(c), 1.0);
+    // return vec4<f32>(julia(Complex(-0.25, 0.0), c), 1.0);
 }

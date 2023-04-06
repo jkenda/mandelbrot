@@ -1,9 +1,9 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::{Instant, Duration}};
 use wgpu::util::DeviceExt;
 use winit::{
-    event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode},
+    event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseScrollDelta},
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, Theme}, platform::unix::WindowBuilderExtUnix,
+    window::{Window, Theme, Fullscreen}, platform::unix::WindowBuilderExtUnix,
 };
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
@@ -44,7 +44,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let mut aspect = size.width as f32 / size.height as f32;
-    let mut camera_controller = CameraController::new(0.02);
+    let mut camera_controller = CameraController::new(0.02, size.width, size.height);
+    let mut f11_state_prev = ElementState::Released;
+    let mut frame_time = Duration::new(1, 0);
 
     let aspect_buffer = device.create_buffer_init(
         &wgpu::util::BufferInitDescriptor {
@@ -162,6 +164,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         // `event_loop.run` never returns, therefore we must do this to ensure
         // the resources are properly cleaned up.
         let _ = (&instance, &adapter, &shader, &pipeline_layout);
+        let start = Instant::now();
 
         *control_flow = ControlFlow::Wait;
         match event {
@@ -172,13 +175,38 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 config.height = size.height;
                 aspect = size.width as f32 / size.height as f32;
                 queue.write_buffer(&aspect_buffer, 0, bytemuck::cast_slice(&[aspect]));
+                camera_controller.update_window_size(size.width, size.height);
                 surface.configure(&device, &config);
                 // On macos the window needs to be redrawn manually after resizing
                 window.request_redraw();
             }
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::F11),
+                        state, .. }, .. }, ..
+            } => {
+                // toggle fullscreen with F11
+                if state != f11_state_prev && state == ElementState::Pressed {
+                    window.set_fullscreen(
+                        if window.fullscreen() == None {
+                            Some(Fullscreen::Borderless(None))
+                        }
+                        else {
+                            None
+                        });
+                }
+                f11_state_prev = state;
+            },
             Event::WindowEvent { event, .. } => {
-                camera_controller.process_events(&event);
-                window.request_redraw();
+                let changed = camera_controller.process_events(&event);
+
+                window.set_title(&format!("Mandelbrotov fraktal | koordinate: ({}, {}) | zoom: {}x | čas sličice: {} ms ({} FPS)",
+                    camera_controller.properties.center[0],
+                    camera_controller.properties.center[1],
+                    1.0 / camera_controller.properties.zoom,
+                    frame_time.as_millis(),
+                    1_000_000 / frame_time.as_micros()));
             }
             Event::RedrawRequested(_) => {
                 camera_controller.update_camera();
@@ -212,6 +240,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
+
+                frame_time = start.elapsed();
             }
             _ => {}
         }
@@ -227,9 +257,21 @@ struct Properties {
     _padding: u32,
 }
 
+impl Default for Properties {
+    fn default() -> Self {
+        Properties {
+            _padding: 0,
+            center: [-0.75, 0.0],
+            zoom: 2.4,
+        }
+    }
+}
+
 struct CameraController {
+    window_size: (f64, f64),
     properties: Properties,
     speed: f32,
+    mouse_position: (f32, f32),
     is_up_pressed: bool,
     is_down_pressed: bool,
     is_left_pressed: bool,
@@ -239,14 +281,12 @@ struct CameraController {
 }
 
 impl CameraController {
-    fn new(speed: f32) -> Self {
+    fn new(speed: f32, width: u32, height: u32) -> Self {
         Self {
+            window_size: (width as f64, height as f64),
             speed,
-            properties: Properties {
-                _padding: 0,
-                center: [-0.25, 0.0],
-                zoom: 2.4,
-            },
+            properties: Default::default(),
+            mouse_position: (0.0, 0.0),
             is_up_pressed: false,
             is_down_pressed: false,
             is_left_pressed: false,
@@ -292,11 +332,37 @@ impl CameraController {
                         self.is_zoom_out_pressed = is_pressed;
                         true
                     }
+                    VirtualKeyCode::Space => {
+                        self.properties = Default::default();
+                        true
+                    }
                     _ => false,
                 }
             }
+            WindowEvent::CursorMoved { device_id: _, position, .. } => {
+                let (width, height) = self.window_size;
+                self.mouse_position = (
+                    -(position.x / width * 2.0 - 1.0) as f32,
+                    -(position.y / height * 2.0 - 1.0) as f32);
+                false
+            }
+            WindowEvent::MouseWheel { device_id: _, delta, .. } => {
+                let (_x, delta) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 0.15, y * 0.15),
+                    MouseScrollDelta::PixelDelta(pos) => ((pos.x * 0.001) as f32, (pos.y * 0.001) as f32),
+                };
+                let (x, y) = self.mouse_position;
+                self.properties.center[0] -= x * delta * self.properties.zoom;
+                self.properties.center[1] += y * delta * self.properties.zoom;
+                self.properties.zoom -= delta * self.properties.zoom;
+                true
+            }
             _ => false,
         }
+    }
+
+    fn update_window_size(&mut self, width: u32, height: u32) {
+        self.window_size = (width as f64, height as f64);
     }
 
     fn update_camera(&mut self) {
@@ -328,6 +394,7 @@ fn main() {
         .with_gtk_theme_variant("dark".to_string())
         .with_wayland_csd_theme(Theme::Dark)
         .with_maximized(true)
+        //.with_fullscreen(Some(Fullscreen::Borderless(None)))
         .build(&event_loop)
         .unwrap();
 
