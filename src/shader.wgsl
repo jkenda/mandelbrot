@@ -7,8 +7,17 @@ struct VertexOutput {
     @location(0) tex_coords: vec2<f32>,
 }
 
+struct Properties {
+    center: vec2<f32>,
+    zoom: f32,
+    _padding: u32,
+}
+
 @group(0) @binding(0)
 var<uniform> aspect: f32;
+
+@group(1) @binding(0)
+var<uniform> properties: Properties;
 
 fn index_to_pos(index: u32) -> vec2<f32> {
     switch index {
@@ -92,6 +101,6 @@ fn colour(c: Complex) -> vec3<f32> {
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    let c = (vertex.tex_coords.xy - vec2<f32>(0.75, 0.5)) * 3.14;
+    let c = ((vertex.tex_coords.xy - vec2<f32>(0.5, 0.5)) * properties.zoom + properties.center);
     return vec4<f32>(colour(c), 1.0);
 }
