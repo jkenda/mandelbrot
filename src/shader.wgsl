@@ -28,9 +28,10 @@ fn index_to_tex(index: u32) -> vec2<f32> {
         x_diff = (aspect - 1.0) / 2.0;
     }
     else if aspect < 1.0 {
-        y_diff = (1.0 - aspect) / 2.0;
+        y_diff = (1.0 / aspect - 1.0) / 2.0;
     }
 
+    // add padding depending on aspect ratio
     let x0 = 0.0 - x_diff;
     let x1 = 1.0 + x_diff;
     let y0 = 0.0 - y_diff;
@@ -56,10 +57,6 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 type Complex = vec2<f32>;
 
-fn abs(a: Complex) -> f32 {
-    return sqrt(a.x * a.x + a.y * a.y);
-}
-
 fn square(a: Complex) -> Complex {
     return Complex(
             a.x * a.x - a.y * a.y,
@@ -67,20 +64,34 @@ fn square(a: Complex) -> Complex {
     );
 }
 
-fn colour(c: Complex) -> f32 {
-    var z = Complex(0.0, 0.0);
-    var n = 255u;
+const lim = 256u;
 
-    while (abs(z) < 2.0 && n > 0u) {
+fn colour(c: Complex) -> vec3<f32> {
+    var z = Complex(0.0, 0.0);
+    var n = 0u;
+    var abs = length(z);
+
+    while (abs < 2.0 && n < lim) {
         z = square(z) + c;
-        n--;
+        abs = length(z);
+        n++;
     }
-    return f32(n) / 255.0;
+
+    if (n == lim) {
+        return vec3<f32>(0.0);
+    }
+    else {
+        let n = f32(n) / f32(lim);
+        let r = abs % 13.1999 / 13.12 + n;
+        let g = n - sin(abs / 1.7) / 21.3 + z.y / 66.7;
+        let b = n - abs % 0.123 + (sin(n * 12.3) + 1.0) / 1999.1213;
+        return vec3<f32>(r, g, b);
+    }
+
 }
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    let c = (vertex.tex_coords.xy - vec2<f32>(0.75, 0.5)) * 2.0;
-    let s = vec3<f32>(colour(c));
-    return vec4<f32>(s, 1.0);
+    let c = (vertex.tex_coords.xy - vec2<f32>(0.75, 0.5)) * 3.14;
+    return vec4<f32>(colour(c), 1.0);
 }
