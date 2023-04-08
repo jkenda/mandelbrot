@@ -1,9 +1,12 @@
+mod icon;
+
 use std::{borrow::Cow, time::{Instant, Duration}};
+use icon::ICON;
 use wgpu::util::DeviceExt;
 use winit::{
-    event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseScrollDelta},
+    event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseScrollDelta, MouseButton},
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, Theme, Fullscreen}, platform::unix::WindowBuilderExtUnix,
+    window::{Window, Theme, Fullscreen, Icon}, platform::unix::WindowBuilderExtUnix, dpi::PhysicalPosition,
 };
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
@@ -43,17 +46,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
     });
 
-    let mut aspect = size.width as f32 / size.height as f32;
     let mut camera_controller = CameraController::new(0.02, size.width, size.height);
     let mut f11_state_prev = ElementState::Released;
+    let mut esc_state_prev = ElementState::Released;
     let mut frame_time = Duration::new(1, 0);
-
-    let aspect_buffer = device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("Aspect ratio buffer"),
-            contents: bytemuck::cast_slice(&[aspect]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
 
     let properties_buffer = device.create_buffer_init(
         &wgpu::util::BufferInitDescriptor {
@@ -62,27 +58,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-    let aspect_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }
-        ],
-        label: Some("aspect_bind_group_layout"),
-    });
-
     let properties_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -92,17 +72,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
         ],
         label: Some("aspect_bind_group_layout"),
-    });
-
-    let aspect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        layout: &aspect_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: aspect_buffer.as_entire_binding(),
-            }
-        ],
-        label: Some("aspect_bind_group"),
     });
 
     let properties_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -119,7 +88,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[
-            &aspect_bind_group_layout,
             &properties_bind_group_layout,
         ],
         push_constant_ranges: &[],
@@ -173,9 +141,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Reconfigure the surface with the new size
                 config.width = size.width;
                 config.height = size.height;
-                aspect = size.width as f32 / size.height as f32;
-                queue.write_buffer(&aspect_buffer, 0, bytemuck::cast_slice(&[aspect]));
                 camera_controller.update_window_size(size.width, size.height);
+                queue.write_buffer(&properties_buffer, 0, bytemuck::cast_slice(&[camera_controller.properties]));
                 surface.configure(&device, &config);
                 // On macos the window needs to be redrawn manually after resizing
                 window.request_redraw();
@@ -198,8 +165,26 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 }
                 f11_state_prev = state;
             },
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        state, .. }, .. }, ..
+            } => {
+                // exit fullscreen with Esc
+                if state != esc_state_prev
+                    && state == ElementState::Pressed
+                    && window.fullscreen() != None
+                {
+                    window.set_fullscreen(None);
+                }
+                esc_state_prev = state;
+            }
             Event::WindowEvent { event, .. } => {
                 let changed = camera_controller.process_events(&event);
+                if changed {
+                    window.request_redraw();
+                }
 
                 window.set_title(&format!("Mandelbrotov fraktal | koordinate: ({}, {}) | zoom: {}x | čas sličice: {} ms ({} FPS)",
                     camera_controller.properties.center[0],
@@ -210,6 +195,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
                 camera_controller.update_camera();
+                camera_controller.update_window_size(config.width, config.height);
                 queue.write_buffer(&properties_buffer, 0, bytemuck::cast_slice(&[camera_controller.properties]));
                 let frame = surface
                     .get_current_texture()
@@ -233,15 +219,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         depth_stencil_attachment: None,
                     });
                     rpass.set_pipeline(&render_pipeline);
-                    rpass.set_bind_group(0, &aspect_bind_group, &[]);
-                    rpass.set_bind_group(1, &properties_bind_group, &[]);
+                    rpass.set_bind_group(0, &properties_bind_group, &[]);
                     rpass.draw(0..6, 0..1);
+
+                    frame_time = start.elapsed();
                 }
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
-
-                frame_time = start.elapsed();
             }
             _ => {}
         }
@@ -254,15 +239,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 struct Properties {
     center: [f32; 2],
     zoom: f32,
-    _padding: u32,
+    aspect: f32,
 }
 
 impl Default for Properties {
     fn default() -> Self {
         Properties {
-            _padding: 0,
             center: [-0.75, 0.0],
             zoom: 2.4,
+            aspect: 1.0,
         }
     }
 }
@@ -271,7 +256,8 @@ struct CameraController {
     window_size: (f64, f64),
     properties: Properties,
     speed: f32,
-    mouse_position: (f32, f32),
+    mouse_position: PhysicalPosition<f64>,
+    is_mouse_left_pressed: bool,
     is_up_pressed: bool,
     is_down_pressed: bool,
     is_left_pressed: bool,
@@ -286,7 +272,8 @@ impl CameraController {
             window_size: (width as f64, height as f64),
             speed,
             properties: Default::default(),
-            mouse_position: (0.0, 0.0),
+            mouse_position: Default::default(),
+            is_mouse_left_pressed: false,
             is_up_pressed: false,
             is_down_pressed: false,
             is_left_pressed: false,
@@ -339,21 +326,42 @@ impl CameraController {
                     _ => false,
                 }
             }
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                state,
+                ..
+            } => {
+                self.is_mouse_left_pressed = if *state == ElementState::Pressed { true } else { false };
+                false
+            },
             WindowEvent::CursorMoved { device_id: _, position, .. } => {
                 let (width, height) = self.window_size;
-                self.mouse_position = (
-                    -(position.x / width * 2.0 - 1.0) as f32,
-                    -(position.y / height * 2.0 - 1.0) as f32);
-                false
+                let dx = -(position.x / width  * 2.0 - 1.0) - self.mouse_position.x;
+                let dy = -(position.y / height * 2.0 - 1.0) - self.mouse_position.y;
+
+                self.mouse_position = PhysicalPosition::new(
+                    -(position.x / width  * 2.0 - 1.0),
+                    -(position.y / height * 2.0 - 1.0));
+
+                if self.is_mouse_left_pressed {
+                    self.properties.center[0] += dx as f32 * self.properties.zoom;
+                    self.properties.center[1] -= dy as f32 * self.properties.zoom;
+                    true
+                }
+                else {
+                    false
+                }
             }
             WindowEvent::MouseWheel { device_id: _, delta, .. } => {
                 let (_x, delta) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x * 0.15, y * 0.15),
+                    MouseScrollDelta::LineDelta(x, y) => (x * 0.11, y * 0.11),
                     MouseScrollDelta::PixelDelta(pos) => ((pos.x * 0.001) as f32, (pos.y * 0.001) as f32),
                 };
-                let (x, y) = self.mouse_position;
-                self.properties.center[0] -= x * delta * self.properties.zoom;
-                self.properties.center[1] += y * delta * self.properties.zoom;
+                if delta < 0.0 && self.properties.zoom >= 5.0 {
+                    return false
+                }
+                self.properties.center[0] -= self.mouse_position.x as f32 * delta * self.properties.zoom;
+                self.properties.center[1] += self.mouse_position.y as f32 * delta * self.properties.zoom;
                 self.properties.zoom -= delta * self.properties.zoom;
                 true
             }
@@ -363,6 +371,7 @@ impl CameraController {
 
     fn update_window_size(&mut self, width: u32, height: u32) {
         self.window_size = (width as f64, height as f64);
+        self.properties.aspect = width as f32 / height as f32;
     }
 
     fn update_camera(&mut self) {
@@ -383,6 +392,9 @@ impl CameraController {
         }
         if self.is_zoom_out_pressed {
             self.properties.zoom += self.speed * self.properties.zoom;
+            if self.properties.zoom > 5.0 {
+                self.properties.zoom = 5.0;
+            }
         }
     }
 }
@@ -391,6 +403,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = winit::window::WindowBuilder::new()
         .with_title("Mandelbrotov fraktal")
+        .with_window_icon(Some(Icon::from_rgba(ICON.to_vec(), 64, 64).unwrap()))
         .with_gtk_theme_variant("dark".to_string())
         .with_wayland_csd_theme(Theme::Dark)
         .with_maximized(true)

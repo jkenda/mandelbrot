@@ -10,13 +10,10 @@ struct VertexOutput {
 struct Properties {
     center: vec2<f32>,
     zoom: f32,
-    _padding: u32,
+    aspect: f32,
 }
 
 @group(0) @binding(0)
-var<uniform> aspect: f32;
-
-@group(1) @binding(0)
 var<uniform> properties: Properties;
 
 fn index_to_pos(index: u32) -> vec2<f32> {
@@ -33,14 +30,14 @@ fn index_to_pos(index: u32) -> vec2<f32> {
 fn index_to_tex(index: u32) -> vec2<f32> {
     var x_diff = 0.0;
     var y_diff = 0.0;
-    if aspect > 1.0 {
-        x_diff = (aspect - 1.0) / 2.0;
+    if properties.aspect > 1.0 {
+        x_diff = (properties.aspect - 1.0) / 2.0;
     }
-    else if aspect < 1.0 {
-        y_diff = (1.0 / aspect - 1.0) / 2.0;
+    else if properties.aspect < 1.0 {
+        y_diff = (1.0 / properties.aspect - 1.0) / 2.0;
     }
 
-    // add padding depending on aspect ratio
+    // add padding depending on properties.aspect ratio
     let x0 = 0.0 - x_diff;
     let x1 = 1.0 + x_diff;
     let y0 = 0.0 - y_diff;
@@ -80,10 +77,10 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z * mix(K.xxx, clamped, c.y);
 }
 
-const lim = 256u;
+const LIM = 512u;
 
 fn colour1(abs: f32, iter: u32) -> vec3<f32> {
-    let iter = f32(iter) / f32(lim);
+    let iter = f32(iter) / f32(LIM);
     let r = abs / 13.12 + iter;
     let g = iter - sin(abs / 1.7) / 24.3;
     let b = hsv2rgb(vec3<f32>(0.0, 1.0, iter)).r;
@@ -91,7 +88,7 @@ fn colour1(abs: f32, iter: u32) -> vec3<f32> {
 }
 
 fn colour2(abs: f32, iter: u32) -> vec3<f32> {
-    let iter = f32(iter) / f32(lim);
+    let iter = f32(iter) / f32(LIM);
     return hsv2rgb(vec3<f32>(0.0, 1.0, iter));
 }
 
@@ -100,7 +97,7 @@ fn julia(c: Complex, z: Complex) -> vec3<f32> {
     var n = 0u;
     var abs = 0.0;
 
-    while (abs < 4.0 && n < lim) {
+    while (abs < 4.0 && n < LIM) {
         z = square(z) + c;
         abs = z.x * z.x + z.y * z.y;
         n++;
@@ -108,7 +105,7 @@ fn julia(c: Complex, z: Complex) -> vec3<f32> {
 
     abs = sqrt(abs);
 
-    if (n == lim) {
+    if (n == LIM) {
         return vec3<f32>(0.0);
     }
     else {
