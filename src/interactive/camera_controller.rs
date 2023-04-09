@@ -1,4 +1,4 @@
-use winit::{dpi::PhysicalPosition, event::{WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseButton, MouseScrollDelta, AxisId, TouchPhase}};
+use winit::{dpi::PhysicalPosition, event::{WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseButton, MouseScrollDelta}};
 
 // We need this for Rust to store our data correctly for the shaders
 #[repr(C)]

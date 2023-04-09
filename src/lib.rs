@@ -2,7 +2,6 @@ mod interactive;
 
 use std::{borrow::Cow, time::{Instant, Duration}};
 
-use interactive::camera_controller::CameraController;
 use wgpu::util::DeviceExt;
 use winit::{
     event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode},
@@ -10,7 +9,9 @@ use winit::{
     window::{Window, Fullscreen},
 };
 
-pub async fn main(event_loop: EventLoop<()>, window: Window) {
+use interactive::camera_controller::CameraController;
+
+pub async fn run(event_loop: EventLoop<()>, window: Window) {
     let size = window.inner_size();
 
     let instance = wgpu::Instance::default();
@@ -133,9 +134,9 @@ pub async fn main(event_loop: EventLoop<()>, window: Window) {
         // `event_loop.run` never returns, therefore we must do this to ensure
         // the resources are properly cleaned up.
         let _ = (&instance, &adapter, &shader, &pipeline_layout);
-        let start = Instant::now();
 
         *control_flow = ControlFlow::Wait;
+        let start = Instant::now();
         match event {
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
             Event::WindowEvent { event: WindowEvent::Resized(size), .. } => {
@@ -152,13 +153,17 @@ pub async fn main(event_loop: EventLoop<()>, window: Window) {
                 event: WindowEvent::KeyboardInput {
                     input: KeyboardInput {
                         virtual_keycode: Some(VirtualKeyCode::F11),
-                        state, .. }, .. }, ..
+                        state, ..
+                    }, ..
+                }, ..
             } => {
                 // toggle fullscreen with F11
                 if state != f11_state_prev && state == ElementState::Pressed {
+                    let video_modes = window.current_monitor().unwrap().video_modes();
                     window.set_fullscreen(
                         if window.fullscreen() == None {
-                            Some(Fullscreen::Borderless(None))
+                            #[cfg(not(target_arch = "wasm32"))]
+                            Some(Fullscreen::Exclusive(video_modes.max().unwrap()))
                         }
                         else {
                             None
@@ -182,12 +187,9 @@ pub async fn main(event_loop: EventLoop<()>, window: Window) {
                 esc_state_prev = state;
             }
             Event::WindowEvent { event, .. } => {
-                let changed = camera_controller.process_events(&event);
-                if changed {
-                    window.request_redraw();
-                }
+                let _changed = camera_controller.process_events(&event);
 
-                window.set_title(&format!("Mandelbrotov fraktal | koordinate: ({}, {}) | zoom: {}x | čas sličice: {} ms ({} FPS)",
+                window.set_title(&format!("Mandelbrot fractal | coords: ({}, {}) | zoom: {}x | frame time: {} ms ({} FPS)",
                     camera_controller.properties().center[0],
                     camera_controller.properties().center[1],
                     1.0 / camera_controller.properties().zoom,

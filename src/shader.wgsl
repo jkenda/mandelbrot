@@ -65,21 +65,16 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 type Complex32 = vec2<f32>;
 type Complex64 = vec2<f64>;
 
-fn square32(a: Complex32) -> Complex32 {
-    //let x = a.x; let y = a.y;
-    //a.x = x*x + y*y;
-    //a.y = 2.0 * x * y;
-    return Complex32(
-            a.x * a.x - a.y * a.y,
-            2.0 * a.x * a.y,
-    );
+fn square32(a: ptr<function, Complex32>) {
+    let x = (*a).x; let y = (*a).y;
+    (*a).x = x*x - y*y;
+    (*a).y = 2.0 * x * y;
 }
 
-fn square64(a: Complex64) -> Complex64 {
-    return Complex64(
-            a.x * a.x - a.y * a.y,
-            f64(2.0) * a.x * a.y,
-    );
+fn square64(a: ptr<function, Complex64>) {
+    let x = (*a).x; let y = (*a).y;
+    (*a).x = x*x - y*y;
+    (*a).y = f64(2) * x * y;
 }
 
 fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
@@ -89,7 +84,7 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     return c.z * mix(K.xxx, clamped, c.y);
 }
 
-const LIM = 512u;
+const LIM = 255u;
 
 fn colour1(abs: f32, iter: u32) -> vec3<f32> {
     let iter = f32(iter) / f32(LIM);
@@ -99,18 +94,14 @@ fn colour1(abs: f32, iter: u32) -> vec3<f32> {
     return vec3<f32>(r, g, b);
 }
 
-fn colour2(abs: f32, iter: u32) -> vec3<f32> {
-    let iter = f32(iter) / f32(LIM);
-    return hsv2rgb(vec3<f32>(0.0, 1.0, iter));
-}
-
 fn julia32(c: Complex32, z: Complex32) -> vec3<f32> {
     var z = z;
     var n = 0u;
     var abs = 0.0;
 
     while (abs < 4.0 && n < LIM) {
-        z = square32(z) + c;
+        square32(&z);
+        z += c;
         abs = z.x * z.x + z.y * z.y;
         n++;
     }
@@ -128,10 +119,11 @@ fn julia32(c: Complex32, z: Complex32) -> vec3<f32> {
 fn julia64(c: Complex64, z: Complex64) -> vec3<f32> {
     var z = z;
     var n = 0u;
-    var abs = f64(0.0);
+    var abs = f64(0);
 
-    while (abs < f64(4.0) && n < LIM) {
-        z = square64(z) + c;
+    while (abs < f64(4) && n < LIM) {
+        square64(&z);
+        z += c;
         abs = z.x * z.x + z.y * z.y;
         n++;
     }
@@ -151,7 +143,7 @@ fn mandelbrot32(c: Complex32) -> vec3<f32> {
 }
 
 fn mandelbrot64(c: Complex64) -> vec3<f32> {
-    return julia64(c, Complex64(f64(0.0), f64(0.0)));
+    return julia64(c, Complex64(f64(0), f64(0)));
 }
 
 @fragment
