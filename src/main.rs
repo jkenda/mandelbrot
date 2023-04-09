@@ -1,30 +1,16 @@
-mod icon;
 
-use icon::ICON;
 use winit::{
     event_loop::EventLoop,
-    window::{Theme, Icon}, platform::unix::WindowBuilderExtUnix,
 };
-
-use mandelbrot_gpu::run;
 
 fn main() {
     let event_loop = EventLoop::new();
-    let window = winit::window::WindowBuilder::new()
-        .with_title("Mandelbrotov fraktal")
-        .with_window_icon(Some(Icon::from_rgba(ICON.to_vec(), 64, 64).unwrap()))
-        .with_gtk_theme_variant("dark".to_string())
-        .with_wayland_csd_theme(Theme::Dark)
-        .with_maximized(true)
-        //.with_fullscreen(Some(Fullscreen::Borderless(None)))
-        .build(&event_loop)
-        .unwrap();
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
         // Temporarily avoid srgb formats for the swapchain on the web
-        pollster::block_on(run(event_loop, window));
+        mandelbrot_gpu::main(event_loop);
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -40,6 +26,6 @@ fn main() {
                     .ok()
             })
             .expect("couldn't append canvas to document body");
-        wasm_bindgen_futures::spawn_local(run(event_loop, window));
+        wasm_bindgen_futures::spawn_local(run(event_loop));
     }
 }
