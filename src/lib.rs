@@ -1,342 +1,234 @@
-use std::ffi::{CStr, CString};
-use std::num::NonZeroU32;
+mod interactive;
 
-use winit::event::{Event, WindowEvent};
-use winit::window::WindowBuilder;
+use std::{borrow::Cow, time::{Instant, Duration}};
 
-use raw_window_handle::HasRawWindowHandle;
+use interactive::camera_controller::CameraController;
+use wgpu::util::DeviceExt;
+use winit::{
+    event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, Fullscreen},
+};
 
-use glutin::config::ConfigTemplateBuilder;
-use glutin::context::{ContextApi, ContextAttributesBuilder, Version};
-use glutin::display::GetGlDisplay;
-use glutin::prelude::*;
-use glutin::surface::SwapInterval;
+pub async fn main(event_loop: EventLoop<()>, window: Window) {
+    let size = window.inner_size();
 
-use glutin_winit::{self, DisplayBuilder, GlWindow};
+    let instance = wgpu::Instance::default();
 
-pub fn main(event_loop: winit::event_loop::EventLoop<()>) {
-    // Only windows requires the window to be present before creating the display.
-    // Other platforms don't really need one.
-    //
-    // XXX if you don't care about running on android or so you can safely remove
-    // this condition and always pass the window builder.
-    let window_builder =
-        if cfg!(wgl_backend) { Some(WindowBuilder::new().with_transparent(true)) } else { None };
-
-    // The template will match only the configurations supporting rendering
-    // to windows.
-    //
-    // XXX We force transparency only on macOS, given that EGL on X11 doesn't
-    // have it, but we still want to show window. The macOS situation is like
-    // that, because we can query only one config at a time on it, but all
-    // normal platforms will return multiple configs, so we can find the config
-    // with transparency ourselves inside the `reduce`.
-    let template =
-        ConfigTemplateBuilder::new().with_alpha_size(8).with_transparency(cfg!(cgl_backend));
-
-    let display_builder = DisplayBuilder::new().with_window_builder(window_builder);
-
-    let (mut window, gl_config) = display_builder
-        .build(&event_loop, template, |configs| {
-            // Find the config with the maximum number of samples, so our triangle will
-            // be smooth.
-            configs
-                .reduce(|accum, config| {
-                    let transparency_check = config.supports_transparency().unwrap_or(false)
-                        & !accum.supports_transparency().unwrap_or(false);
-
-                    if transparency_check || config.num_samples() > accum.num_samples() {
-                        config
-                    } else {
-                        accum
-                    }
-                })
-                .unwrap()
+    let surface = unsafe { instance.create_surface(&window) }.unwrap();
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            // Request an adapter which can render to our surface
+            compatible_surface: Some(&surface),
         })
-        .unwrap();
+        .await
+        .expect("Failed to find an appropriate adapter");
 
-    println!("Picked a config with {} samples", gl_config.num_samples());
+    // Create the logical device and command queue
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: None,
+                features: wgpu::Features::SHADER_FLOAT64,
+                // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
+                limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits()),
+            },
+            None,
+        )
+        .await
+        .expect("Failed to create device");
 
-    let raw_window_handle = window.as_ref().map(|window| window.raw_window_handle());
-
-    // XXX The display could be obtained from the any object created by it, so we
-    // can query it from the config.
-    let gl_display = gl_config.display();
-
-    // The context creation part. It can be created before surface and that's how
-    // it's expected in multithreaded + multiwindow operation mode, since you
-    // can send NotCurrentContext, but not Surface.
-    let context_attributes = ContextAttributesBuilder::new().build(raw_window_handle);
-
-    // Since glutin by default tries to create OpenGL core context, which may not be
-    // present we should try gles.
-    let fallback_context_attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::Gles(None))
-        .build(raw_window_handle);
-
-    // There are also some old devices that support neither modern OpenGL nor GLES.
-    // To support these we can try and create a 2.1 context.
-    let legacy_context_attributes = ContextAttributesBuilder::new()
-        .with_context_api(ContextApi::OpenGl(Some(Version::new(2, 1))))
-        .build(raw_window_handle);
-
-    let mut not_current_gl_context = Some(unsafe {
-        gl_display.create_context(&gl_config, &context_attributes).unwrap_or_else(|_| {
-            gl_display.create_context(&gl_config, &fallback_context_attributes).unwrap_or_else(
-                |_| {
-                    gl_display
-                        .create_context(&gl_config, &legacy_context_attributes)
-                        .expect("failed to create context")
-                },
-            )
-        })
+    // Load the shaders from disk
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
     });
 
-    let mut state = None;
-    let mut renderer = None;
-    event_loop.run(move |event, window_target, control_flow| {
-        control_flow.set_wait();
+    let mut camera_controller = CameraController::new(0.02, size.width, size.height);
+    let mut f11_state_prev = ElementState::Released;
+    let mut esc_state_prev = ElementState::Released;
+    let mut frame_time = Duration::new(1, 0);
+
+    let properties_buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Camera controller buffer"),
+            contents: bytemuck::cast_slice(&[camera_controller.properties()]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+    let properties_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }
+        ],
+        label: Some("aspect_bind_group_layout"),
+    });
+
+    let properties_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &properties_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: properties_buffer.as_entire_binding(),
+            }
+        ],
+        label: Some("aspect_bind_group"),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[
+            &properties_bind_group_layout,
+        ],
+        push_constant_ranges: &[],
+    });
+
+    let swapchain_capabilities = surface.get_capabilities(&adapter);
+    let swapchain_format = swapchain_capabilities.formats[0];
+
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(swapchain_format.into())],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swapchain_format,
+        width: size.width,
+        height: size.height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: swapchain_capabilities.alpha_modes[0],
+        view_formats: vec![],
+    };
+
+    surface.configure(&device, &config);
+
+    event_loop.run(move |event, _, control_flow| {
+        // Have the closure take ownership of the resources.
+        // `event_loop.run` never returns, therefore we must do this to ensure
+        // the resources are properly cleaned up.
+        let _ = (&instance, &adapter, &shader, &pipeline_layout);
+        let start = Instant::now();
+
+        *control_flow = ControlFlow::Wait;
         match event {
-            Event::Resumed => {
-                #[cfg(android_platform)]
-                println!("Android window available");
-
-                let window = window.take().unwrap_or_else(|| {
-                    let window_builder = WindowBuilder::new().with_transparent(true);
-                    glutin_winit::finalize_window(window_target, window_builder, &gl_config)
-                        .unwrap()
-                });
-
-                let attrs = window.build_surface_attributes(<_>::default());
-                let gl_surface = unsafe {
-                    gl_config.display().create_window_surface(&gl_config, &attrs).unwrap()
-                };
-
-                // Make it current.
-                let gl_context =
-                    not_current_gl_context.take().unwrap().make_current(&gl_surface).unwrap();
-
-                // The context needs to be current for the Renderer to set up shaders and
-                // buffers. It also performs function loading, which needs a current context on
-                // WGL.
-                renderer.get_or_insert_with(|| Renderer::new(&gl_display));
-
-                // Try setting vsync.
-                if let Err(res) = gl_surface
-                    .set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()))
-                {
-                    eprintln!("Error setting vsync: {res:?}");
-                }
-
-                assert!(state.replace((gl_context, gl_surface, window)).is_none());
-            },
-            Event::Suspended => {
-                // This event is only raised on Android, where the backing NativeWindow for a GL
-                // Surface can appear and disappear at any moment.
-                println!("Android window removed");
-
-                // Destroy the GL Surface and un-current the GL Context before ndk-glue releases
-                // the window back to the system.
-                let (gl_context, ..) = state.take().unwrap();
-                assert!(not_current_gl_context
-                    .replace(gl_context.make_not_current().unwrap())
-                    .is_none());
-            },
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(size) => {
-                    if size.width != 0 && size.height != 0 {
-                        // Some platforms like EGL require resizing GL surface to update the size
-                        // Notable platforms here are Wayland and macOS, other don't require it
-                        // and the function is no-op, but it's wise to resize it for portability
-                        // reasons.
-                        if let Some((gl_context, gl_surface, _)) = &state {
-                            gl_surface.resize(
-                                gl_context,
-                                NonZeroU32::new(size.width).unwrap(),
-                                NonZeroU32::new(size.height).unwrap(),
-                            );
-                            let renderer = renderer.as_ref().unwrap();
-                            renderer.resize(size.width as i32, size.height as i32);
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
+            Event::WindowEvent { event: WindowEvent::Resized(size), .. } => {
+                // Reconfigure the surface with the new size
+                config.width = size.width;
+                config.height = size.height;
+                camera_controller.update_window_size(size.width, size.height);
+                queue.write_buffer(&properties_buffer, 0, bytemuck::cast_slice(&[camera_controller.properties()]));
+                surface.configure(&device, &config);
+                // On macos the window needs to be redrawn manually after resizing
+                window.request_redraw();
+            }
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::F11),
+                        state, .. }, .. }, ..
+            } => {
+                // toggle fullscreen with F11
+                if state != f11_state_prev && state == ElementState::Pressed {
+                    window.set_fullscreen(
+                        if window.fullscreen() == None {
+                            Some(Fullscreen::Borderless(None))
                         }
-                    }
-                },
-                WindowEvent::CloseRequested => {
-                    control_flow.set_exit();
-                },
-                _ => (),
-            },
-            Event::RedrawEventsCleared => {
-                if let Some((gl_context, gl_surface, window)) = &state {
-                    let renderer = renderer.as_ref().unwrap();
-                    renderer.draw();
-                    window.request_redraw();
-
-                    gl_surface.swap_buffers(gl_context).unwrap();
+                        else {
+                            None
+                        });
                 }
+                f11_state_prev = state;
             },
-            _ => (),
-        }
-    })
-}
-
-pub struct Renderer {
-    program: gl::types::GLuint,
-    vao: gl::types::GLuint,
-    vbo: gl::types::GLuint,
-}
-
-impl Renderer {
-    pub fn new<D: GlDisplay>(gl_display: &D) -> Self {
-        unsafe {
-            gl::load_with(|symbol| {
-                let symbol = CString::new(symbol).unwrap();
-                gl_display.get_proc_address(symbol.as_c_str()).cast()
-            });
-
-            if let Some(renderer) = get_gl_string(gl::RENDERER) {
-                println!("Running on {}", renderer.to_string_lossy());
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        state, .. }, .. }, ..
+            } => {
+                // exit fullscreen with Esc
+                if state != esc_state_prev
+                    && state == ElementState::Pressed
+                    && window.fullscreen() != None
+                {
+                    window.set_fullscreen(None);
+                }
+                esc_state_prev = state;
             }
-            if let Some(version) = get_gl_string(gl::VERSION) {
-                println!("OpenGL Version {}", version.to_string_lossy());
+            Event::WindowEvent { event, .. } => {
+                let changed = camera_controller.process_events(&event);
+                if changed {
+                    window.request_redraw();
+                }
+
+                window.set_title(&format!("Mandelbrotov fraktal | koordinate: ({}, {}) | zoom: {}x | čas sličice: {} ms ({} FPS)",
+                    camera_controller.properties().center[0],
+                    camera_controller.properties().center[1],
+                    1.0 / camera_controller.properties().zoom,
+                    frame_time.as_millis(),
+                    1_000_000 / frame_time.as_micros()));
             }
+            Event::RedrawRequested(_) => {
+                camera_controller.update_window_size(config.width, config.height);
+                queue.write_buffer(&properties_buffer, 0, bytemuck::cast_slice(&[camera_controller.properties()]));
+                let frame = surface
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: true,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                    });
+                    rpass.set_pipeline(&render_pipeline);
+                    rpass.set_bind_group(0, &properties_bind_group, &[]);
+                    rpass.draw(0..6, 0..1);
 
-            if let Some(shaders_version) = get_gl_string(gl::SHADING_LANGUAGE_VERSION) {
-                println!("Shaders version on {}", shaders_version.to_string_lossy());
+                    frame_time = start.elapsed();
+                }
+
+                queue.submit(Some(encoder.finish()));
+                frame.present();
             }
-
-            let vertex_shader = create_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SOURCE);
-            let fragment_shader = create_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
-
-            let program = gl::CreateProgram();
-
-            gl::AttachShader(program, vertex_shader);
-            gl::AttachShader(program, fragment_shader);
-
-            gl::LinkProgram(program);
-
-            gl::UseProgram(program);
-
-            gl::DeleteShader(vertex_shader);
-            gl::DeleteShader(fragment_shader);
-
-            let mut vao = std::mem::zeroed();
-            gl::GenVertexArrays(1, &mut vao);
-            gl::BindVertexArray(vao);
-
-            let mut vbo = std::mem::zeroed();
-            gl::GenBuffers(1, &mut vbo);
-            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl::BufferData(
-                gl::ARRAY_BUFFER,
-                (VERTEX_DATA.len() * std::mem::size_of::<f32>()) as gl::types::GLsizeiptr,
-                VERTEX_DATA.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
-
-            let pos_attrib = gl::GetAttribLocation(program, b"position\0".as_ptr() as *const _);
-            let color_attrib = gl::GetAttribLocation(program, b"color\0".as_ptr() as *const _);
-            gl::VertexAttribPointer(
-                pos_attrib as gl::types::GLuint,
-                2,
-                gl::FLOAT,
-                0,
-                5 * std::mem::size_of::<f32>() as gl::types::GLsizei,
-                std::ptr::null(),
-            );
-            gl::VertexAttribPointer(
-                color_attrib as gl::types::GLuint,
-                3,
-                gl::FLOAT,
-                0,
-                5 * std::mem::size_of::<f32>() as gl::types::GLsizei,
-                (2 * std::mem::size_of::<f32>()) as *const () as *const _,
-            );
-            gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
-            gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
-
-            Self { program, vao, vbo }
+            _ => {}
         }
-    }
-
-    pub fn draw(&self) {
-        unsafe {
-            gl::UseProgram(self.program);
-
-            gl::BindVertexArray(self.vao);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-
-            gl::ClearColor(0.1, 0.1, 0.1, 0.9);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            gl::DrawArrays(gl::TRIANGLES, 0, 6);
-        }
-    }
-
-    pub fn resize(&self, width: i32, height: i32) {
-        unsafe {
-            gl::Viewport(0, 0, width, height);
-        }
-    }
+    });
 }
-
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        unsafe {
-            gl::DeleteProgram(self.program);
-            gl::DeleteBuffers(1, &self.vbo);
-            gl::DeleteVertexArrays(1, &self.vao);
-        }
-    }
-}
-
-unsafe fn create_shader(
-    shader: gl::types::GLenum,
-    source: &[u8],
-) -> gl::types::GLuint {
-    let shader = gl::CreateShader(shader);
-    gl::ShaderSource(shader, 1, [source.as_ptr().cast()].as_ptr(), std::ptr::null());
-    gl::CompileShader(shader);
-    shader
-}
-
-fn get_gl_string(variant: gl::types::GLenum) -> Option<&'static CStr> {
-    unsafe {
-        let s = gl::GetString(variant);
-        (!s.is_null()).then(|| CStr::from_ptr(s.cast()))
-    }
-}
-
-#[rustfmt::skip]
-static VERTEX_DATA: [f32; 30] = [
-    -1.0, -1.0,  1.0,  0.0,  0.0,
-    -1.0,  1.0,  0.0,  1.0,  0.0,
-     1.0, -1.0,  0.0,  0.0,  1.0,
-    -1.0,  1.0,  0.0,  1.0,  0.0,
-     1.0, -1.0,  0.0,  0.0,  1.0,
-     1.0,  1.0,  0.0,  1.0,  1.0,
-];
-
-const VERTEX_SHADER_SOURCE: &[u8] = b"
-#version 100
-precision mediump float;
-
-attribute vec2 position;
-attribute vec3 color;
-
-varying vec3 v_color;
-
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-    v_color = color;
-}
-\0";
-
-const FRAGMENT_SHADER_SOURCE: &[u8] = b"
-#version 100
-precision mediump float;
-
-varying vec3 v_color;
-
-void main() {
-    gl_FragColor = vec4(v_color, 1.0);
-}
-\0";

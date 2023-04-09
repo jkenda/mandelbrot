@@ -8,9 +8,10 @@ struct VertexOutput {
 }
 
 struct Properties {
-    center: vec2<f32>,
-    zoom: f32,
+    center: vec2<f64>,
+    zoom: f64,
     aspect: f32,
+    math64: u32,
 }
 
 @group(0) @binding(0)
@@ -61,12 +62,23 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
-type Complex = vec2<f32>;
+type Complex32 = vec2<f32>;
+type Complex64 = vec2<f64>;
 
-fn square(a: Complex) -> Complex {
-    return Complex(
+fn square32(a: Complex32) -> Complex32 {
+    //let x = a.x; let y = a.y;
+    //a.x = x*x + y*y;
+    //a.y = 2.0 * x * y;
+    return Complex32(
             a.x * a.x - a.y * a.y,
             2.0 * a.x * a.y,
+    );
+}
+
+fn square64(a: Complex64) -> Complex64 {
+    return Complex64(
+            a.x * a.x - a.y * a.y,
+            f64(2.0) * a.x * a.y,
     );
 }
 
@@ -92,13 +104,13 @@ fn colour2(abs: f32, iter: u32) -> vec3<f32> {
     return hsv2rgb(vec3<f32>(0.0, 1.0, iter));
 }
 
-fn julia(c: Complex, z: Complex) -> vec3<f32> {
+fn julia32(c: Complex32, z: Complex32) -> vec3<f32> {
     var z = z;
     var n = 0u;
     var abs = 0.0;
 
     while (abs < 4.0 && n < LIM) {
-        z = square(z) + c;
+        z = square32(z) + c;
         abs = z.x * z.x + z.y * z.y;
         n++;
     }
@@ -113,13 +125,44 @@ fn julia(c: Complex, z: Complex) -> vec3<f32> {
     }
 }
 
-fn mandelbrot(c: Complex) -> vec3<f32> {
-    return julia(c, Complex(0.0, 0.0));
+fn julia64(c: Complex64, z: Complex64) -> vec3<f32> {
+    var z = z;
+    var n = 0u;
+    var abs = f64(0.0);
+
+    while (abs < f64(4.0) && n < LIM) {
+        z = square64(z) + c;
+        abs = z.x * z.x + z.y * z.y;
+        n++;
+    }
+
+    abs = sqrt(abs);
+
+    if (n == LIM) {
+        return vec3<f32>(0.0);
+    }
+    else {
+        return colour1(f32(abs), n);
+    }
+}
+
+fn mandelbrot32(c: Complex32) -> vec3<f32> {
+    return julia32(c, Complex32(0.0, 0.0));
+}
+
+fn mandelbrot64(c: Complex64) -> vec3<f32> {
+    return julia64(c, Complex64(f64(0.0), f64(0.0)));
 }
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    let c = ((vertex.tex_coords.xy - vec2<f32>(0.5, 0.5)) * properties.zoom + properties.center);
-    return vec4<f32>(mandelbrot(c), 1.0);
+    if properties.math64 != 0u {
+        let c = vec2<f64>(vertex.tex_coords.xy - vec2<f32>(0.5, 0.5)) * properties.zoom + properties.center;
+        return vec4<f32>(mandelbrot64(c), 1.0);
+    }
+    else {
+        let c = (vertex.tex_coords.xy - vec2<f32>(0.5, 0.5)) * f32(properties.zoom) + vec2<f32>(properties.center);
+        return vec4<f32>(mandelbrot32(c), 1.0);
+    }
     // return vec4<f32>(julia(Complex(-0.25, 0.0), c), 1.0);
 }

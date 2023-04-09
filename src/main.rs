@@ -1,16 +1,23 @@
 
 use winit::{
-    event_loop::EventLoop,
+    event_loop::EventLoop, window::Theme,
 };
 
 fn main() {
     let event_loop = EventLoop::new();
+    let window = winit::window::WindowBuilder::new()
+        .with_title("Mandelbrotov fraktal")
+        .with_theme(Some(Theme::Dark))
+        .with_maximized(true)
+        //.with_fullscreen(Some(Fullscreen::Borderless(None)))
+        .build(&event_loop)
+        .unwrap();
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
         // Temporarily avoid srgb formats for the swapchain on the web
-        mandelbrot_gpu::main(event_loop);
+        pollster::block_on(mandelbrot_gpu::main(event_loop, window));
     }
     #[cfg(target_arch = "wasm32")]
     {
