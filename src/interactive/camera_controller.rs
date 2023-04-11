@@ -1,8 +1,8 @@
-use winit::{dpi::PhysicalPosition, event::{WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseButton, MouseScrollDelta}};
+use winit::{
+    dpi::PhysicalPosition,
+    event::{WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseButton, MouseScrollDelta}};
 
-// We need this for Rust to store our data correctly for the shaders
 #[repr(C)]
-// This is so we can store this in a buffer
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Properties {
     pub center: [f64; 2],
@@ -11,16 +11,40 @@ pub struct Properties {
     math64: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Properties32 {
+    pub center: [f32; 2],
+    pub zoom: f32,
+    aspect: f32,
+    math64: u32,
+}
+
 impl Default for Properties {
     fn default() -> Self {
         Properties {
             center: [-0.75, 0.0],
-            zoom: 2.4,
+            zoom: 1.2,
             aspect: 1.0,
             math64: 0,
         }
     }
 }
+
+impl From<Properties> for Properties32 {
+    fn from(properties: Properties) -> Self {
+        Properties32 {
+            center: [
+                properties.center[0] as f32,
+                properties.center[1] as f32,
+            ],
+            zoom: properties.zoom as f32,
+            aspect: properties.aspect,
+            math64: 0,
+        }
+    }
+}
+
 
 pub struct CameraController {
     window_size: (f64, f64),
@@ -43,6 +67,14 @@ impl CameraController {
 
     pub fn properties(&self) -> Properties {
         self.properties
+    }
+
+    pub fn properties32(&self) -> Properties32 {
+        Properties32::from(self.properties)
+    }
+
+    pub fn mouse_position(&self) -> PhysicalPosition<f64> {
+        self.mouse_position
     }
 
     pub fn process_events(&mut self, event: &WindowEvent) -> bool {
@@ -112,8 +144,8 @@ impl CameraController {
 
                 if self.is_mouse_left_pressed {
                     self.move_center(PhysicalPosition::new(
-                        -dx * self.properties.zoom,
-                        -dy * self.properties.zoom));
+                        -dx * self.properties.zoom * 2.0,
+                        -dy * self.properties.zoom * 2.0));
                     true
                 }
                 else {
@@ -145,8 +177,8 @@ impl CameraController {
         self.properties.zoom *= factor;
 
         self.move_center(PhysicalPosition::new(
-                -center.x * delta * self.properties.zoom,
-                -center.y * delta * self.properties.zoom));
+                center.x * (1.0 - factor) * self.properties.zoom,
+                center.y * (1.0 - factor) * self.properties.zoom));
 
         self.properties.math64 = if self.properties.zoom < 1.0 / 10_000.0 { 1 } else { 0 };
         true

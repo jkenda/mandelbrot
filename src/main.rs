@@ -15,7 +15,6 @@ fn main() {
         .with_window_icon(Some(Icon::from_rgba(ICON.to_vec(), 64, 64).unwrap()))
         .with_theme(Some(Theme::Dark))
         .with_maximized(true)
-        //.with_fullscreen(Some(Fullscreen::Borderless(None)))
         .build(&event_loop)
         .unwrap();
 
