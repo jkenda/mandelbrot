@@ -2,7 +2,7 @@ mod interactive;
 
 use std::{borrow::Cow, time::{Instant, Duration}};
 
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, Backend, DeviceType, Features};
 use winit::{
     event::{Event, WindowEvent, KeyboardInput, ElementState, VirtualKeyCode},
     event_loop::{ControlFlow, EventLoop},
@@ -10,6 +10,28 @@ use winit::{
 };
 
 use interactive::camera_controller::CameraController;
+
+fn backend_str(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Empty         => "None",
+        Backend::Gl            => "OpenGL",
+        Backend::Dx12          => "DirectX 12",
+        Backend::Dx11          => "DirectX 11",
+        Backend::Metal         => "Metal",
+        Backend::Vulkan        => "Vulkan",
+        Backend::BrowserWebGpu => "WebGPU",
+    }
+}
+
+fn type_str(adapter_info: DeviceType) -> &'static str {
+    match adapter_info {
+        DeviceType::Other => "Other",
+        DeviceType::IntegratedGpu => "Integrated GPU",
+        DeviceType::DiscreteGpu => "Discrete GPU",
+        DeviceType::VirtualGpu => "Virtual GPU",
+        DeviceType::Cpu => "CPU",
+    }
+}
 
 pub async fn run(event_loop: EventLoop<()>, window: Window) {
     let size = window.inner_size();
@@ -31,43 +53,37 @@ pub async fn run(event_loop: EventLoop<()>, window: Window) {
 
     println!("Adapter info:");
     println!("\tname: {}", adapter_info.name);
+    println!("\ttype: {}", type_str(adapter_info.device_type));
+    println!("\tbackend: {}", backend_str(adapter_info.backend));
     println!("\tdriver: {}", adapter_info.driver);
+    println!("\t        {}", adapter_info.driver_info);
+
+    // SHADER_FLOAT64 feature is only available on Vulkan
+    // it is needed for zooming past 1000x
+    let features = match adapter_info.backend {
+        Backend::Vulkan => Features::SHADER_FLOAT64,
+        _ => Features::empty(),
+    };
 
     // Create the logical device and command queue
-    let response = adapter
+    let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                features: wgpu::Features::SHADER_FLOAT64,
+                features,
                 // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
                 limits: wgpu::Limits::downlevel_webgl2_defaults()
                     .using_resolution(adapter.limits()),
             },
             None,
         )
-        .await;
+        .await
+        .expect("Failed to create device");
 
-    let (device, queue, float64) = match response {
-        Ok((device, queue)) => (device, queue, true),
-        Err(_) => {
-            let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::SHADER_FLOAT64,
-                    // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                    limits: wgpu::Limits::downlevel_webgl2_defaults()
-                        .using_resolution(adapter.limits()),
-                },
-                None,
-            )
-            .await
-            .expect("Failed to create device");
-            (device, queue, false)
-        },
-    };
+    let float64 = features == Features::SHADER_FLOAT64;
 
     // Load the shaders from disk
+    // use the 64-bit shader only when 64-bit math is available
     let shader = if float64 {
         device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -197,11 +213,9 @@ pub async fn run(event_loop: EventLoop<()>, window: Window) {
             } => {
                 // toggle fullscreen with F11
                 if state != f11_state_prev && state == ElementState::Pressed {
-                    let video_modes = window.current_monitor().unwrap().video_modes();
                     window.set_fullscreen(
                         if window.fullscreen() == None {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            Some(Fullscreen::Exclusive(video_modes.max().unwrap()))
+                            Some(Fullscreen::Borderless(None))
                         }
                         else {
                             None

@@ -7,15 +7,17 @@ struct VertexOutput {
     @location(0) tex_coords: vec2<f32>,
 }
 
-struct Properties64 {
+
+struct Properties {
     center: vec2<f64>,
     zoom: f64,
-    aspect: f32,
+    width: f32, height: f32,
+    i_width: f32, i_height: f32,
     math64: u32,
 }
 
 @group(0) @binding(0)
-var<uniform> properties: Properties64;
+var<uniform> properties: Properties;
 
 fn index_to_pos(index: u32) -> vec2<f32> {
     switch index {
@@ -29,13 +31,15 @@ fn index_to_pos(index: u32) -> vec2<f32> {
 }
 
 fn index_to_tex(index: u32) -> vec2<f32> {
+    let aspect = properties.width / properties.height;
+
     var x_diff = 0.0;
     var y_diff = 0.0;
-    if properties.aspect > 1.0 {
-        x_diff = (properties.aspect - 1.0) / 2.0;
+    if aspect > 1.0 {
+        x_diff = (aspect - 1.0) / 2.0;
     }
-    else if properties.aspect < 1.0 {
-        y_diff = (1.0 / properties.aspect - 1.0) / 2.0;
+    else if aspect < 1.0 {
+        y_diff = (1.0 / aspect - 1.0) / 2.0;
     }
 
     // add padding depending on properties.aspect ratio
@@ -148,13 +152,24 @@ fn mandelbrot64(c: Complex64) -> vec3<f32> {
 
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
+
     if properties.math64 != 0u {
         let c = vec2<f64>(vertex.tex_coords.xy * 2.0 - vec2<f32>(1.0, 1.0)) * properties.zoom + properties.center;
-        return vec4<f32>(mandelbrot64(c), 1.0);
+        return vec4<f32>((mandelbrot64(c)), 1.0);
     }
     else {
-        let c = (vertex.tex_coords.xy * 2.0 - vec2<f32>(1.0, 1.0)) * f32(properties.zoom) + vec2<f32>(properties.center);
-        return vec4<f32>(mandelbrot32(c), 1.0);
+        let offset1 = vec2<f32>(0.0, 1.0 / properties.height * 0.5);
+        let offset2 = vec2<f32>(1.0 / properties.height * 0.5, 0.0);
+        let tex_coord1 = vertex.tex_coords.xy;
+        let tex_coord2 = vertex.tex_coords.xy + offset1;
+        let tex_coord3 = vertex.tex_coords.xy + offset2;
+        let tex_coord4 = vertex.tex_coords.xy + offset1 + offset2;
+        let c1 = (tex_coord1 * 2.0 - vec2<f32>(1.0, 1.0)) * f32(properties.zoom) + vec2<f32>(properties.center);
+        let c2 = (tex_coord2 * 2.0 - vec2<f32>(1.0, 1.0)) * f32(properties.zoom) + vec2<f32>(properties.center);
+        let c3 = (tex_coord3 * 2.0 - vec2<f32>(1.0, 1.0)) * f32(properties.zoom) + vec2<f32>(properties.center);
+        let c4 = (tex_coord4 * 2.0 - vec2<f32>(1.0, 1.0)) * f32(properties.zoom) + vec2<f32>(properties.center);
+        let colour = (mandelbrot32(c1) + mandelbrot32(c2) + mandelbrot32(c3) + mandelbrot32(c4)) / 4.0;
+        return vec4<f32>(colour, 1.0);
     }
     // return vec4<f32>(julia(Complex(-0.25, 0.0), c), 1.0);
 }

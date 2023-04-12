@@ -3,20 +3,23 @@ use winit::{
     event::{WindowEvent, KeyboardInput, ElementState, VirtualKeyCode, MouseButton, MouseScrollDelta}};
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Properties {
     pub center: [f64; 2],
     pub zoom: f64,
-    aspect: f32,
+    width: f32, height: f32,
+    i_width: f32, i_height: f32,
     math64: u32,
+    _padding: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Properties32 {
     pub center: [f32; 2],
     pub zoom: f32,
-    aspect: f32,
+    width: f32, height: f32,
+    i_width: f32, i_height: f32,
     math64: u32,
 }
 
@@ -25,8 +28,10 @@ impl Default for Properties {
         Properties {
             center: [-0.75, 0.0],
             zoom: 1.2,
-            aspect: 1.0,
+            width: 1920.0, height: 1080.0,
+            i_width: 1.0 / 1920.0, i_height: 1.0 / 1080.0,
             math64: 0,
+            _padding: 0,
         }
     }
 }
@@ -39,7 +44,8 @@ impl From<Properties> for Properties32 {
                 properties.center[1] as f32,
             ],
             zoom: properties.zoom as f32,
-            aspect: properties.aspect,
+            width: properties.width, height: properties.height,
+            i_width: properties.i_width, i_height: properties.i_height,
             math64: 0,
         }
     }
@@ -145,7 +151,7 @@ impl CameraController {
                 if self.is_mouse_left_pressed {
                     self.move_center(PhysicalPosition::new(
                         -dx * self.properties.zoom * 2.0,
-                        -dy * self.properties.zoom * 2.0));
+                        -dy * self.properties.zoom));
                     true
                 }
                 else {
@@ -177,7 +183,7 @@ impl CameraController {
         self.properties.zoom *= factor;
 
         self.move_center(PhysicalPosition::new(
-                center.x * (1.0 - factor) * self.properties.zoom,
+                center.x * (1.0 - factor) * self.properties.zoom * 2.0,
                 center.y * (1.0 - factor) * self.properties.zoom));
 
         self.properties.math64 = if self.properties.zoom < 1.0 / 10_000.0 { 1 } else { 0 };
@@ -191,7 +197,13 @@ impl CameraController {
 
     pub fn update_window_size(&mut self, width: u32, height: u32) {
         self.window_size = (width as f64, height as f64);
-        self.properties.aspect = width as f32 / height as f32;
+        let width = width as f32;
+        let height = height as f32;
+
+        self.properties.width = width;
+        self.properties.height = height;
+        self.properties.i_width = width;
+        self.properties.i_height = height;
     }
 }
 
