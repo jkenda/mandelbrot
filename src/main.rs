@@ -6,7 +6,7 @@ use winit::{
     window::{Theme, Icon},
 };
 
-use mandelbrot_gpu::run;
+use mandelbrot::run;
 
 fn main() {
     let event_loop = EventLoop::new();
